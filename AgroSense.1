@@ -1,0 +1,288 @@
+// ============================================================
+// AgroSense - Conversión de Java a PSeInt
+// ============================================================
+// ---------- Funciones auxiliares ----------
+Funcion r <- mapConstrained(x,inMin,inMax,outMin,outMax)
+	Definir r Como Entero;
+	Definir mapeado Como Real;
+	Si inMax=inMin Entonces
+		r <- outMin;
+	SiNo
+		mapeado <- (x-inMin)*(outMax-outMin)/(inMax-inMin)+outMin;
+		r <- redon(mapeado);
+		Si r>outMax Entonces
+			r <- outMax;
+		FinSi
+		Si r<outMin Entonces
+			r <- outMin;
+		FinSi
+	FinSi
+FinFuncion
+
+Funcion t <- formatearFila16(texto)
+	Definir t Como Cadena;
+	t <- texto;
+	Si Longitud(t)>16 Entonces
+		t <- Subcadena(t,0,15);
+	SiNo
+		Mientras Longitud(t)<16 Hacer
+			t <- Concatenar(t,' ');
+		FinMientras
+	FinSi
+FinFuncion
+
+Funcion t <- fmt1(x)
+	Definir t Como Cadena;
+	t <- ConvertirATexto(redon(x*10)/10);
+FinFuncion
+
+Funcion t <- textoLogico(cond,txtVerdad,txtFalso)
+	Definir t Como Cadena;
+	Si cond Entonces
+		t <- txtVerdad;
+	SiNo
+		t <- txtFalso;
+	FinSi
+FinFuncion
+
+// ---------- Algoritmo principal ----------
+Algoritmo AgroSense
+	// ===== Configuración AP / servidor (referencia) =====
+	Definir NOMBRE_RED, CLAVE_RED Como Cadena;
+	Definir PUERTO_SERVIDOR Como Entero;
+	NOMBRE_RED <- 'AgroSenseESP32';
+	CLAVE_RED <- 'AgroSense123';
+	PUERTO_SERVIDOR <- 80;
+	// ===== Calibración y umbrales =====
+	Definir VALOR_SECO, VALOR_MOJADO, LIMITE_SECO, UMBRAL_AGUA Como Entero;
+	Definir UMBRAL_DIST_CM Como Real;
+	Definir RELE_ACTIVO_HIGH Como Logico;
+	Definir DURACION_ALERTA_MS Como Entero;
+	VALOR_SECO <- 4095;
+	VALOR_MOJADO <- 1200;
+	LIMITE_SECO <- 3000;
+	UMBRAL_DIST_CM <- 14.0;
+	UMBRAL_AGUA <- 1500;
+	RELE_ACTIVO_HIGH <- Verdadero;
+	DURACION_ALERTA_MS <- 2500;
+	// ===== Temporizadores (ms) =====
+	Definir INTERVALO_PARPADEO, INTERVALO_SERIAL, INTERVALO_DHT, INTERVALO_LECTURA Como Entero;
+	INTERVALO_PARPADEO <- 300;
+	INTERVALO_SERIAL <- 500;
+	INTERVALO_DHT <- 2000;
+	INTERVALO_LECTURA <- 150;
+	// ===== Estado de sensores y actuadores =====
+	Definir humedad, porcentajeHumedad, valAgua Como Entero;
+	Definir temperatura, humedadAmbiente, distCm Como Real;
+	Definir pirDetectado Como Logico;
+	humedad <- 0;
+	porcentajeHumedad <- 0;
+	temperatura <- 0.0;
+	humedadAmbiente <- 0.0;
+	distCm <- -1.0;
+	valAgua <- 0;
+	pirDetectado <- Falso;
+	Definir bombaActiva, estadoRelePrevio, inicioHecho, estadoParpadeo Como Logico;
+	Definir alertaTipo, estadoActual Como Entero;
+	bombaActiva <- Falso;
+	estadoRelePrevio <- Falso;
+	inicioHecho <- Falso;
+	alertaTipo <- 0;
+	estadoActual <- 0;
+	estadoParpadeo <- Falso;
+	Definir bombaRiegoEncendida, bombaTanqueEncendida, buzzerEncendido Como Logico;
+	Definir ledRojoEncendido, ledVerdeEncendido, ledAlertaEncendido Como Logico;
+	Definir ledNormalEncendido, ledAmarilloEncendido Como Logico;
+	bombaRiegoEncendida <- Falso;
+	bombaTanqueEncendida <- Falso;
+	buzzerEncendido <- Falso;
+	ledRojoEncendido <- Falso;
+	ledVerdeEncendido <- Falso;
+	ledAlertaEncendido <- Falso;
+	ledNormalEncendido <- Verdadero;
+	ledAmarilloEncendido <- Falso;
+	Definir lcdFilas Como Cadena;
+	Dimensionar lcdFilas(2);
+	lcdFilas[1] <- formatearFila16(''); // índice 1 = Fila 0, índice 2 = Fila 1
+	lcdFilas[2] <- formatearFila16('');
+	Definir tiempoAnterior, tiempoSerial, tiempoDHT, tAlerta, tLectura Como Entero;
+	tiempoAnterior <- 0;
+	tiempoSerial <- 0;
+	tiempoDHT <- 0;
+	tAlerta <- 0;
+	tLectura <- 0;
+	// ===== Entradas de la lectura (equivalente a los parámetros de actualizarLecturas) =====
+	// En Java los valores podían ser null; aquí se usan banderas "hay...".
+	Definir ahora, lecturaSuelo, nuevoValAgua Como Entero;
+	Definir nuevaTemp, nuevaHumAmb, nuevaDistCm Como Real;
+	Definir hayTemp, hayHumAmb, hayDist, hayAgua, pir Como Logico;
+	ahora <- 1000;
+	lecturaSuelo <- 3400;
+	nuevaTemp <- 27.5;
+	nuevaHumAmb <- 68.0;
+	nuevaDistCm <- 16.2;
+	nuevoValAgua <- 400;
+	pir <- Verdadero;
+	hayTemp <- Verdadero;
+	hayHumAmb <- Verdadero;
+	hayDist <- Verdadero;
+	hayAgua <- Verdadero;
+	// ===== actualizarLecturas =====
+	Definir aguaLimite, tanqueVacio, cambioRele, sueloSeco, sonarPipTanque Como Logico;
+	Definir pos Como Entero;
+	Definir l1 Como Cadena;
+	humedad <- lecturaSuelo;
+	porcentajeHumedad <- mapConstrained(humedad,VALOR_SECO,VALOR_MOJADO,0,100);
+	Si  NO inicioHecho O (ahora-tiempoDHT>=INTERVALO_DHT) Entonces
+		tiempoDHT <- ahora;
+		Si hayTemp Entonces
+			temperatura <- nuevaTemp;
+		FinSi
+		Si hayHumAmb Entonces
+			humedadAmbiente <- nuevaHumAmb;
+		FinSi
+	FinSi
+	Si  NO inicioHecho O (ahora-tLectura>=INTERVALO_LECTURA) Entonces
+		tLectura <- ahora;
+		Si hayDist Entonces
+			distCm <- nuevaDistCm;
+		FinSi
+		Si hayAgua Entonces
+			valAgua <- nuevoValAgua;
+		FinSi
+	FinSi
+	pirDetectado <- pir;
+	ledAmarilloEncendido <- pirDetectado;
+	aguaLimite <- (valAgua>=UMBRAL_AGUA);
+	tanqueVacio <- (distCm>=UMBRAL_DIST_CM);
+	Si aguaLimite Entonces
+		bombaActiva <- Falso;
+		alertaTipo <- 1;
+		tAlerta <- ahora;
+	SiNo
+		Si tanqueVacio Entonces
+			bombaActiva <- Verdadero;
+			alertaTipo <- 2;
+			tAlerta <- ahora;
+		FinSi
+	FinSi
+	Si alertaTipo<>0 Y (ahora-tAlerta>DURACION_ALERTA_MS) Entonces
+		alertaTipo <- 0;
+	FinSi
+	bombaTanqueEncendida <- (bombaActiva Y  NO aguaLimite);
+	cambioRele <- NO inicioHecho O (bombaTanqueEncendida<>estadoRelePrevio);
+	estadoRelePrevio <- bombaTanqueEncendida;
+	// ----- Control del riego por humedad del suelo -----
+	sueloSeco <- (humedad>=LIMITE_SECO);
+	Si sueloSeco Entonces
+		Si estadoActual<>1 Entonces
+			estadoActual <- 1;
+			Escribir '---------------------------------------';
+			Escribir '*** ALERTA: Suelo seco - Bomba ACTIVADA ***';
+		FinSi
+		bombaRiegoEncendida <- Verdadero;
+		ledVerdeEncendido <- Falso;
+		Si ahora-tiempoAnterior>=INTERVALO_PARPADEO Entonces
+			tiempoAnterior <- ahora;
+			estadoParpadeo <- NO estadoParpadeo;
+			ledRojoEncendido <- estadoParpadeo;
+			Si  NO aguaLimite Y  NO (tanqueVacio O alertaTipo=2) Entonces
+				buzzerEncendido <- estadoParpadeo;
+			FinSi
+		FinSi
+	SiNo
+		Si estadoActual<>2 Entonces
+			estadoActual <- 2;
+			Escribir '---------------------------------------';
+			Escribir '*** Suelo húmedo - Bomba APAGADA ***';
+		FinSi
+		bombaRiegoEncendida <- Falso;
+		ledRojoEncendido <- Falso;
+		ledVerdeEncendido <- Verdadero;
+		estadoParpadeo <- Falso;
+		Si  NO aguaLimite Y  NO (tanqueVacio O alertaTipo=2) Entonces
+			buzzerEncendido <- Falso;
+		FinSi
+	FinSi
+	// ----- Pitido del tanque vacío -----
+	sonarPipTanque <- ( NO aguaLimite Y (tanqueVacio O alertaTipo=2));
+	Si sonarPipTanque Entonces
+		pos <- ahora MOD 1200;
+		Si pos<720 Entonces
+			buzzerEncendido <- ((pos MOD 180)<90);
+		SiNo
+			buzzerEncendido <- Falso;
+		FinSi
+	FinSi
+	// ----- Pantalla LCD -----
+	Si cambioRele Entonces
+		lcdFilas[1] <- formatearFila16('');
+		lcdFilas[2] <- formatearFila16('');
+	FinSi
+	Si distCm>=0.0 Entonces
+		l1 <- 'D:'+fmt1(distCm)+'cm '+textoLogico(bombaTanqueEncendida,'B:ON','B:OFF');
+	SiNo
+		l1 <- 'D:--.-cm '+textoLogico(bombaTanqueEncendida,'B:ON','B:OFF');
+	FinSi
+	Si alertaTipo=1 Entonces
+		ledAlertaEncendido <- Verdadero;
+		ledNormalEncendido <- Falso;
+		lcdFilas[1] <- formatearFila16('AGUA AL LIMITE');
+		lcdFilas[2] <- formatearFila16('BOMBA: APAGADA');
+	SiNo
+		Si alertaTipo=2 Entonces
+			ledAlertaEncendido <- Verdadero;
+			ledNormalEncendido <- Falso;
+			lcdFilas[1] <- formatearFila16('TANQUE VACIO');
+			lcdFilas[2] <- formatearFila16(l1);
+		SiNo
+			ledAlertaEncendido <- Falso;
+			ledNormalEncendido <- Verdadero;
+			lcdFilas[1] <- formatearFila16('ESTADO NORMAL');
+			lcdFilas[2] <- formatearFila16(l1);
+		FinSi
+	FinSi
+	// ----- Salida serial -----
+	Si  NO inicioHecho O (ahora-tiempoSerial>=INTERVALO_SERIAL) Entonces
+		tiempoSerial <- ahora;
+		Escribir '---------------------------------------';
+		Escribir 'Sensor suelo: ', humedad;
+		Escribir 'Humedad suelo: ', porcentajeHumedad, '%';
+		Escribir 'Temperatura: ', fmt1(temperatura), ' C';
+		Escribir 'Humedad ambiente: ', fmt1(humedadAmbiente), '%';
+		Escribir 'Distancia: ', fmt1(distCm), ' cm';
+		Escribir 'Nivel de agua: ', valAgua;
+	FinSi
+	inicioHecho <- Verdadero;
+	// ===== construirJsonDatos =====
+	Definir comilla, estadoSuelo, estadoBombaRiego, estadoZumbadorRiego, estadoBombaTanque Como Cadena;
+	comilla <- '';
+	estadoSuelo <- textoLogico(sueloSeco,'SECO','HÚMEDO');
+	estadoBombaRiego <- textoLogico(sueloSeco,'ENCENDIDA','APAGADA');
+	estadoZumbadorRiego <- textoLogico(sueloSeco,'ENCENDIDO','APAGADO');
+	estadoBombaTanque <- textoLogico(bombaTanqueEncendida,'ENCENDIDA','APAGADA');
+	// Cada campo del JSON se arma en su propia línea para mostrarlo en vertical
+	// ===== Salida (equivalente al main de Java) =====
+	Escribir '=======================================';
+	Escribir 'JSON /datos:';
+	Escribir '{';
+	Escribir '  '+comilla+'humedad'+comilla+': '+ConvertirATexto(porcentajeHumedad)+',';
+	Escribir '  '+comilla+'temperatura'+comilla+': '+fmt1(temperatura)+',';
+	Escribir '  '+comilla+'humedadAmbiente'+comilla+': '+fmt1(humedadAmbiente)+',';
+	Escribir '  '+comilla+'valorSensor'+comilla+': '+ConvertirATexto(humedad)+',';
+	Escribir '  '+comilla+'estado'+comilla+': '+comilla+estadoSuelo+comilla+',';
+	Escribir '  '+comilla+'bomba'+comilla+': '+comilla+estadoBombaRiego+comilla+',';
+	Escribir '  '+comilla+'zumbador'+comilla+': '+comilla+estadoZumbadorRiego+comilla+',';
+	Escribir '  '+comilla+'distanciaCm'+comilla+': '+fmt1(distCm)+',';
+	Escribir '  '+comilla+'valorAgua'+comilla+': '+ConvertirATexto(valAgua)+',';
+	Escribir '  '+comilla+'bombaTanque'+comilla+': '+comilla+estadoBombaTanque+comilla+',';
+	Escribir '  '+comilla+'alertaTanque'+comilla+': '+ConvertirATexto(alertaTipo)+',';
+	Escribir '  '+comilla+'pir'+comilla+': '+textoLogico(pirDetectado,'true','false');
+	Escribir '}';
+	Escribir '';
+	Escribir '=======================================';
+	Escribir 'PANTALLA LCD:';
+	Escribir 'Fila 0: [', lcdFilas[1], ']';
+	Escribir 'Fila 1: [', lcdFilas[2], ']';
+	Escribir '=======================================';
+FinAlgoritmo
